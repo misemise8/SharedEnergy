@@ -1,0 +1,8 @@
+C:\Users\semit\RiderProjects\SharedEnergy\bin\Debug\netstandard2.1\SharedEnergy.deps.json
+C:\Users\semit\RiderProjects\SharedEnergy\bin\Debug\netstandard2.1\SharedEnergy.dll
+C:\Users\semit\RiderProjects\SharedEnergy\obj\Debug\netstandard2.1\SharedEnergy.csproj.AssemblyReference.cache
+C:\Users\semit\RiderProjects\SharedEnergy\obj\Debug\netstandard2.1\SharedEnergy.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\semit\RiderProjects\SharedEnergy\obj\Debug\netstandard2.1\SharedEnergy.AssemblyInfoInputs.cache
+C:\Users\semit\RiderProjects\SharedEnergy\obj\Debug\netstandard2.1\SharedEnergy.AssemblyInfo.cs
+C:\Users\semit\RiderProjects\SharedEnergy\obj\Debug\netstandard2.1\SharedEnergy.csproj.CoreCompileInputs.cache
+C:\Users\semit\RiderProjects\SharedEnergy\obj\Debug\netstandard2.1\SharedEnergy.dll

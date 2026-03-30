@@ -1,0 +1,8 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<Project ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ImportGroup Condition=" '$(ExcludeRestorePackageImports)' != 'true' ">
+    <Import Project="$(NuGetPackageRoot)linkoid.repo.common.build\0.2.2\build\Linkoid.Repo.Common.Build.targets" Condition="Exists('$(NuGetPackageRoot)linkoid.repo.common.build\0.2.2\build\Linkoid.Repo.Common.Build.targets')" />
+    <Import Project="$(NuGetPackageRoot)linkoid.repo.plugin.build\0.2.2\build\Linkoid.Repo.Plugin.Build.targets" Condition="Exists('$(NuGetPackageRoot)linkoid.repo.plugin.build\0.2.2\build\Linkoid.Repo.Plugin.Build.targets')" />
+    <Import Project="$(NuGetPackageRoot)bepinex.core\5.4.21\build\BepInEx.Core.targets" Condition="Exists('$(NuGetPackageRoot)bepinex.core\5.4.21\build\BepInEx.Core.targets')" />
+  </ImportGroup>
+</Project>
