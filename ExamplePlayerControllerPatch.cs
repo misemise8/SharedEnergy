@@ -104,41 +104,42 @@ public class PatchBatteryContinuousDrain
 [HarmonyPatch(typeof(ItemMelee), "SwingHitRPC")]
 public class PatchMeleeSwingHit
 {
-    static void Prefix(ItemMelee __instance, bool durabilityLoss,
-        ref float ___durabilityDrain, ref float ___durabilityLossCooldown, ItemBattery ___itemBattery)
+    static void Postfix(ItemMelee __instance, bool durabilityLoss, ItemBattery ___itemBattery)
     {
         if (!durabilityLoss) return;
         if (ChargingStation.instance == null) return;
         if (___itemBattery == null) return;
         if (ChargingStation.instance.chargeTotal <= 0) return;
+        if (!SemiFunc.IsMasterClientOrSingleplayer()) return;
 
-        // ステーションが肩代わり → バッテリーを一時的に満タンにしてdrain後に戻す
-        // durabilityDrainをステーションコストに換算: 100batteryLife = 20station
-        float stationCost = ___durabilityDrain * 20f / 100f;
-        int costInt = Mathf.Max(1, Mathf.RoundToInt(stationCost));
-        costInt = Mathf.Min(costInt, ChargingStation.instance.chargeTotal);
-        PatchBatteryConsume.DrainStation(costInt);
+        // 元のメソッドがすでに減らしてるのでステーションが肩代わりする分を戻す
+        float durabilityDrain = Traverse.Create(__instance).Field("durabilityDrain").GetValue<float>();
+        float durabilityLossCooldown = Traverse.Create(__instance).Field("durabilityLossCooldown").GetValue<float>();
 
-        // バッテリーが減らないように満タンに保つ
-        ___itemBattery.batteryLife = 100f;
+        // cooldownチェック：cooldownが0.1fにセットされた = ドレインが発生した
+        if (durabilityLossCooldown > 0f)
+        {
+            ___itemBattery.batteryLife += durabilityDrain; // 元に戻す
+            int costInt = Mathf.Max(1, Mathf.RoundToInt(durabilityDrain * 20f / 100f));
+            costInt = Mathf.Min(costInt, ChargingStation.instance.chargeTotal);
+            PatchBatteryConsume.DrainStation(costInt);
+        }
     }
 }
 
 [HarmonyPatch(typeof(ItemMelee), "EnemyOrPVPSwingHitRPC")]
 public class PatchMeleeEnemySwingHit
 {
-    static void Prefix(ItemMelee __instance, bool _playerHit,
-        ref float ___durabilityDrainOnEnemiesAndPVP, ItemBattery ___itemBattery)
+    static void Postfix(ItemMelee __instance, bool _playerHit, ItemBattery ___itemBattery)
     {
         if (ChargingStation.instance == null) return;
         if (___itemBattery == null) return;
         if (ChargingStation.instance.chargeTotal <= 0) return;
 
-        float stationCost = ___durabilityDrainOnEnemiesAndPVP * 20f / 100f;
-        int costInt = Mathf.Max(1, Mathf.RoundToInt(stationCost));
+        float drain = Traverse.Create(__instance).Field("durabilityDrainOnEnemiesAndPVP").GetValue<float>();
+        ___itemBattery.batteryLife += drain; // 元に戻す
+        int costInt = Mathf.Max(1, Mathf.RoundToInt(drain * 20f / 100f));
         costInt = Mathf.Min(costInt, ChargingStation.instance.chargeTotal);
         PatchBatteryConsume.DrainStation(costInt);
-
-        ___itemBattery.batteryLife = 100f;
     }
 }
