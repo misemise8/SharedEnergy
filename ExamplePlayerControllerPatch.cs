@@ -1,36 +1,41 @@
 ﻿using System.Collections.Generic;
+using System.Reflection;
 using HarmonyLib;
 using UnityEngine;
 
 namespace SharedEnergy;
 
 // ========================================
-// Patch 1: RemoveFullBar（離散消費 - 銃など）
+// Patch 1: RemoveFullBar（銃系）
 // ========================================
 [HarmonyPatch(typeof(ItemBattery), nameof(ItemBattery.RemoveFullBar))]
 public class PatchBatteryConsume
 {
     static bool Prefix(ItemBattery __instance, int _bars)
     {
+        if (!SemiFunc.IsMasterClientOrSingleplayer()) return true;
+        if (SemiFunc.RunIsShop()) return true;
         if (ChargingStation.instance == null) return true;
+        if (StatsManager.instance == null) return true;
 
         int cost = Mathf.Max(1, Mathf.RoundToInt((float)_bars * 20f / __instance.batteryBars));
 
         if (ChargingStation.instance.chargeTotal >= cost)
         {
             DrainStation(cost);
-            SharedEnergy.Logger.LogInfo(
-                $"[SharedEnergy] RemoveFullBar: ステーション消費 {cost}, 残量: {ChargingStation.instance.chargeTotal}");
-            return false; // 武器バッテリーは減らさない
+            return false;
         }
 
-        SharedEnergy.Logger.LogInfo("[SharedEnergy] ステーション不足、武器バッテリーを消費");
         return true;
     }
 
     internal static void DrainStation(int cost)
     {
-        int newTotal = ChargingStation.instance.chargeTotal - cost;
+        if (!SemiFunc.IsMasterClientOrSingleplayer()) return;
+        if (ChargingStation.instance == null) return;
+        if (StatsManager.instance == null) return;
+
+        int newTotal = Mathf.Max(0, ChargingStation.instance.chargeTotal - cost);
         ChargingStation.instance.chargeTotal = newTotal;
         float newFloat = (float)newTotal / 100f;
         Traverse.Create(ChargingStation.instance).Field("chargeFloat").SetValue(newFloat);
@@ -39,107 +44,165 @@ public class PatchBatteryConsume
 }
 
 // ========================================
-// Patch 2: Update（連続ドレイン - ドローンなど）
+// Patch 2: ItemBattery.Update（連続ドレイン系）
 // ========================================
 [HarmonyPatch(typeof(ItemBattery), "Update")]
 public class PatchBatteryContinuousDrain
 {
-    // フレームごとのドレイン量は小さいので、端数を蓄積して
-    // 整数1単位以上になったらステーションから引く
-    private static readonly Dictionary<int, float> _saved = new();
-    private static readonly Dictionary<int, float> _debt  = new();
+    internal static readonly Dictionary<int, float> Saved = new();
+    internal static readonly Dictionary<int, float> Debt = new();
 
     static void Prefix(ItemBattery __instance)
     {
-        _saved[__instance.GetInstanceID()] = __instance.batteryLife;
+        if (!SemiFunc.IsMasterClientOrSingleplayer()) return;
+        if (SemiFunc.RunIsShop()) return;
+        Saved[__instance.GetInstanceID()] = __instance.batteryLife;
     }
 
     static void Postfix(ItemBattery __instance)
     {
+        if (!SemiFunc.IsMasterClientOrSingleplayer()) return;
         if (ChargingStation.instance == null) return;
 
         int id = __instance.GetInstanceID();
-        if (!_saved.TryGetValue(id, out float before)) return;
+        if (!Saved.TryGetValue(id, out float before)) return;
 
         float drained = before - __instance.batteryLife;
-        if (drained <= 0f) return; // ドレインなし or 充電中
+        if (drained <= 0f) return;
 
-        // ステーションが空なら通常消費させる
         if (ChargingStation.instance.chargeTotal <= 0)
         {
-            _debt.Remove(id);
+            Debt.Remove(id);
             return;
         }
 
-        // バッテリーを元に戻す（ステーションが肩代わり）
         __instance.batteryLife = before;
 
-        // ステーションコストに換算して蓄積
-        // RemoveFullBar の換算レートに合わせる: 全バー(100%) = 20 ステーションチャージ
-        float stationCost = drained * 20f / 100f;
-
-        if (!_debt.TryGetValue(id, out float currentDebt))
+        if (!Debt.TryGetValue(id, out float currentDebt))
             currentDebt = 0f;
-        currentDebt += stationCost;
+        currentDebt += drained * 20f / 100f;
 
-        // 整数単位以上たまったらステーションから引く
         if (currentDebt >= 1f)
         {
             int costInt = Mathf.FloorToInt(currentDebt);
             costInt = Mathf.Min(costInt, ChargingStation.instance.chargeTotal);
             PatchBatteryConsume.DrainStation(costInt);
             currentDebt -= costInt;
-
-            SharedEnergy.Logger.LogInfo(
-                $"[SharedEnergy] 連続ドレイン: ステーション消費 {costInt}, 残量: {ChargingStation.instance.chargeTotal}");
         }
 
-        _debt[id] = currentDebt;
+        Debt[id] = currentDebt;
     }
 }
 
 // ========================================
-// Patch 3: メレー武器のヒット時消費
+// Patch 3: メレー武器（SwingHitRPC）
 // ========================================
 [HarmonyPatch(typeof(ItemMelee), "SwingHitRPC")]
 public class PatchMeleeSwingHit
 {
+    private static readonly Dictionary<int, float> Debt = new();
+
+    // durabilityDrainのFieldInfoをキャッシュ
+    private static readonly FieldInfo DrainField =
+        typeof(ItemMelee).GetField("durabilityDrain", BindingFlags.NonPublic | BindingFlags.Instance);
+    private static readonly FieldInfo CooldownField =
+        typeof(ItemMelee).GetField("durabilityLossCooldown", BindingFlags.NonPublic | BindingFlags.Instance);
+
     static void Postfix(ItemMelee __instance, bool durabilityLoss, ItemBattery ___itemBattery)
     {
+        if (!SemiFunc.IsMasterClientOrSingleplayer()) return;
         if (!durabilityLoss) return;
         if (ChargingStation.instance == null) return;
         if (___itemBattery == null) return;
         if (ChargingStation.instance.chargeTotal <= 0) return;
-        if (!SemiFunc.IsMasterClientOrSingleplayer()) return;
 
-        // 元のメソッドがすでに減らしてるのでステーションが肩代わりする分を戻す
-        float durabilityDrain = Traverse.Create(__instance).Field("durabilityDrain").GetValue<float>();
-        float durabilityLossCooldown = Traverse.Create(__instance).Field("durabilityLossCooldown").GetValue<float>();
+        float cooldown = (float)CooldownField.GetValue(__instance);
+        if (cooldown <= 0f) return;
 
-        // cooldownチェック：cooldownが0.1fにセットされた = ドレインが発生した
-        if (durabilityLossCooldown > 0f)
+        float drain = (float)DrainField.GetValue(__instance);
+
+        // バッテリーを戻す（上限クランプあり）
+        ___itemBattery.batteryLife = Mathf.Min(100f, ___itemBattery.batteryLife + drain);
+
+        int id = __instance.GetInstanceID();
+        if (!Debt.TryGetValue(id, out float debt)) debt = 0f;
+        debt += drain * 20f / 100f;
+
+        if (debt >= 1f)
         {
-            ___itemBattery.batteryLife += durabilityDrain; // 元に戻す
-            int costInt = Mathf.Max(1, Mathf.RoundToInt(durabilityDrain * 20f / 100f));
+            int costInt = Mathf.FloorToInt(debt);
             costInt = Mathf.Min(costInt, ChargingStation.instance.chargeTotal);
             PatchBatteryConsume.DrainStation(costInt);
+            debt -= costInt;
         }
+
+        Debt[id] = debt;
     }
+
+    internal static void Remove(int id) => Debt.Remove(id);
 }
 
+// ========================================
+// Patch 4: メレー武器（EnemyOrPVPSwingHitRPC）
+// ========================================
 [HarmonyPatch(typeof(ItemMelee), "EnemyOrPVPSwingHitRPC")]
 public class PatchMeleeEnemySwingHit
 {
+    private static readonly Dictionary<int, float> Debt = new();
+
+    private static readonly FieldInfo EnemyDrainField =
+        typeof(ItemMelee).GetField("durabilityDrainOnEnemiesAndPVP", BindingFlags.Public | BindingFlags.Instance);
+
     static void Postfix(ItemMelee __instance, bool _playerHit, ItemBattery ___itemBattery)
     {
+        if (!SemiFunc.IsMasterClientOrSingleplayer()) return;
         if (ChargingStation.instance == null) return;
         if (___itemBattery == null) return;
         if (ChargingStation.instance.chargeTotal <= 0) return;
 
-        float drain = Traverse.Create(__instance).Field("durabilityDrainOnEnemiesAndPVP").GetValue<float>();
-        ___itemBattery.batteryLife += drain; // 元に戻す
-        int costInt = Mathf.Max(1, Mathf.RoundToInt(drain * 20f / 100f));
-        costInt = Mathf.Min(costInt, ChargingStation.instance.chargeTotal);
-        PatchBatteryConsume.DrainStation(costInt);
+        float drain = (float)EnemyDrainField.GetValue(__instance);
+
+        ___itemBattery.batteryLife = Mathf.Min(100f, ___itemBattery.batteryLife + drain);
+
+        int id = __instance.GetInstanceID();
+        if (!Debt.TryGetValue(id, out float debt)) debt = 0f;
+        debt += drain * 20f / 100f;
+
+        if (debt >= 1f)
+        {
+            int costInt = Mathf.FloorToInt(debt);
+            costInt = Mathf.Min(costInt, ChargingStation.instance.chargeTotal);
+            PatchBatteryConsume.DrainStation(costInt);
+            debt -= costInt;
+        }
+
+        Debt[id] = debt;
+    }
+
+    internal static void Remove(int id) => Debt.Remove(id);
+}
+
+// ========================================
+// Patch 5: クリーンアップ（OnDestroyベース）
+// ========================================
+[HarmonyPatch(typeof(ItemBattery), "OnDestroy")]
+public class PatchBatteryCleanup
+{
+    static void Postfix(ItemBattery __instance)
+    {
+        int id = __instance.GetInstanceID();
+        PatchBatteryContinuousDrain.Saved.Remove(id);
+        PatchBatteryContinuousDrain.Debt.Remove(id);
+    }
+}
+
+[HarmonyPatch(typeof(ItemMelee), "OnDestroy")]
+public class PatchMeleeCleanup
+{
+    static void Postfix(ItemMelee __instance)
+    {
+        int id = __instance.GetInstanceID();
+        PatchMeleeSwingHit.Remove(id);
+        PatchMeleeEnemySwingHit.Remove(id);
     }
 }
