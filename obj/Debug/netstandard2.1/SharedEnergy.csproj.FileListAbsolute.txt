@@ -6,3 +6,4 @@ C:\Users\semit\RiderProjects\SharedEnergy\obj\Debug\netstandard2.1\SharedEnergy.
 C:\Users\semit\RiderProjects\SharedEnergy\obj\Debug\netstandard2.1\SharedEnergy.AssemblyInfo.cs
 C:\Users\semit\RiderProjects\SharedEnergy\obj\Debug\netstandard2.1\SharedEnergy.csproj.CoreCompileInputs.cache
 C:\Users\semit\RiderProjects\SharedEnergy\obj\Debug\netstandard2.1\SharedEnergy.dll
+C:\Users\semit\RiderProjects\SharedEnergy\obj\Debug\netstandard2.1\SharedEnergy.sourcelink.json
