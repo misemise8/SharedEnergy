@@ -40,6 +40,28 @@ public class PatchBatteryConsume
         float newFloat = (float)newTotal / 100f;
         Traverse.Create(ChargingStation.instance).Field("chargeFloat").SetValue(newFloat);
         StatsManager.instance.runStats["chargingStationChargeTotal"] = newTotal;
+
+        // クリスタル数を更新して見た目も壊す
+        int newCrystalCount = Mathf.CeilToInt((float)newTotal / 10f);
+        int currentCrystalCount = SemiFunc.StatGetItemsPurchased("Item Power Crystal");
+
+        if (newCrystalCount < currentCrystalCount)
+        {
+            int crystalsToBreak = currentCrystalCount - newCrystalCount;
+            StatsManager.instance.itemsPurchased["Item Power Crystal"] = newCrystalCount;
+
+            // クリスタルを視覚的に壊す
+            var breakMethod = typeof(ChargingStation)
+                .GetMethod("DestroyCrystal", 
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            if (breakMethod != null)
+            {
+                for (int i = 0; i < crystalsToBreak; i++)
+                {
+                    breakMethod.Invoke(ChargingStation.instance, null);
+                }
+            }
+        }
     }
 }
 
