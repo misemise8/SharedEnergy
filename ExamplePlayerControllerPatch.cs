@@ -116,6 +116,52 @@ public class PatchBatteryContinuousDrain
     }
 }
 
+
+[HarmonyPatch(typeof(ItemBattery), "FixedUpdate")]
+public class PatchBatteryFixedUpdate
+{
+    static void Prefix(ItemBattery __instance)
+    {
+        if (!SemiFunc.IsMasterClientOrSingleplayer()) return;
+        if (SemiFunc.RunIsShop()) return;
+        PatchBatteryContinuousDrain.Saved[__instance.GetInstanceID()] = __instance.batteryLife;
+    }
+
+    static void Postfix(ItemBattery __instance)
+    {
+        if (!SemiFunc.IsMasterClientOrSingleplayer()) return;
+        if (ChargingStation.instance == null) return;
+
+        int id = __instance.GetInstanceID();
+        if (!PatchBatteryContinuousDrain.Saved.TryGetValue(id, out float before)) return;
+
+        float drained = before - __instance.batteryLife;
+        if (drained <= 0f) return;
+
+        if (ChargingStation.instance.chargeTotal <= 0)
+        {
+            PatchBatteryContinuousDrain.Debt.Remove(id);
+            return;
+        }
+
+        __instance.batteryLife = before;
+
+        if (!PatchBatteryContinuousDrain.Debt.TryGetValue(id, out float currentDebt))
+            currentDebt = 0f;
+        currentDebt += drained * 20f / 100f;
+
+        if (currentDebt >= 1f)
+        {
+            int costInt = Mathf.FloorToInt(currentDebt);
+            costInt = Mathf.Min(costInt, ChargingStation.instance.chargeTotal);
+            PatchBatteryConsume.DrainStation(costInt);
+            currentDebt -= costInt;
+        }
+
+        PatchBatteryContinuousDrain.Debt[id] = currentDebt;
+    }
+}
+
 // ========================================
 // Patch 3: メレー武器（SwingHitRPC）
 // ========================================
