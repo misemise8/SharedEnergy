@@ -34,31 +34,17 @@ public class PatchBatteryConsume
         if (!SemiFunc.IsMasterClientOrSingleplayer()) return;
         if (ChargingStation.instance == null) return;
         if (StatsManager.instance == null) return;
-
+    
         int newTotal = Mathf.Max(0, ChargingStation.instance.chargeTotal - cost);
         ChargingStation.instance.chargeTotal = newTotal;
         float newFloat = (float)newTotal / 100f;
         Traverse.Create(ChargingStation.instance).Field("chargeFloat").SetValue(newFloat);
         StatsManager.instance.runStats["chargingStationChargeTotal"] = newTotal;
-
-        // DestroyCrystalだけ呼ぶ（内部でitemsPurchasedも正しく更新される）
-        int newCrystalCount = Mathf.CeilToInt((float)newTotal / 10f);
-        int currentCrystalCount = SemiFunc.StatGetItemsPurchased("Item Power Crystal");
-
-        if (newCrystalCount < currentCrystalCount)
-        {
-            int crystalsToBreak = currentCrystalCount - newCrystalCount;
-            var breakMethod = typeof(ChargingStation)
-                .GetMethod("DestroyCrystal",
-                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            if (breakMethod != null)
-            {
-                for (int i = 0; i < crystalsToBreak; i++)
-                {
-                    breakMethod.Invoke(ChargingStation.instance, null);
-                }
-            }
-        }
+    
+        // chargeIntも同期して次ステージのmax計算を正確にする
+        int newChargeInt = Mathf.CeilToInt((float)newTotal / 10f);
+        Traverse.Create(ChargingStation.instance).Field("chargeInt").SetValue(newChargeInt);
+        StatsManager.instance.itemsPurchased["Item Power Crystal"] = newChargeInt;
     }
 }
 
