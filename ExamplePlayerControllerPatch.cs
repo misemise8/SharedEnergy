@@ -34,6 +34,8 @@ public class PatchBatteryConsume
         if (!SemiFunc.IsMasterClientOrSingleplayer()) return;
         if (ChargingStation.instance == null) return;
         if (StatsManager.instance == null) return;
+
+        SharedEnergy.Logger.LogInfo($"[DrainStation] 消費:{cost}, 現在のchargeTotal:{ChargingStation.instance.chargeTotal}, itemsPurchased:{SemiFunc.StatGetItemsPurchased("Item Power Crystal")}");
     
         int newTotal = Mathf.Max(0, ChargingStation.instance.chargeTotal - cost);
         ChargingStation.instance.chargeTotal = newTotal;
@@ -236,16 +238,6 @@ public class PatchMeleeEnemySwingHit
 // ========================================
 // Patch 5: クリーンアップ（OnDestroyベース）
 // ========================================
-[HarmonyPatch(typeof(ItemBattery), "OnDestroy")]
-public class PatchBatteryCleanup
-{
-    static void Postfix(ItemBattery __instance)
-    {
-        int id = __instance.GetInstanceID();
-        PatchBatteryContinuousDrain.Saved.Remove(id);
-        PatchBatteryContinuousDrain.Debt.Remove(id);
-    }
-}
 
 [HarmonyPatch(typeof(ItemMelee), "OnDestroy")]
 public class PatchMeleeCleanup
