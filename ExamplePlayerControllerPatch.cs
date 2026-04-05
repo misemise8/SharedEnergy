@@ -339,6 +339,7 @@ public class PatchBatteryCleanup
         int id = __instance.GetInstanceID();
         PatchBatteryContinuousDrain.Saved.Remove(id);
         PatchBatteryContinuousDrain.Debt.Remove(id);
+        PatchDroneDirectBatteryDrain.Remove(__instance);
     }
 }
 
@@ -495,6 +496,125 @@ public class PatchCrystalPurchase
     }
 }
 
+[HarmonyPatch]
+public static class PatchDroneDirectBatteryDrain
+{
+    private static readonly Dictionary<int, PatchBatteryContinuousDrain.BatterySnapshot> Saved = new();
+    private static readonly Dictionary<int, float> Debt = new();
+
+    internal static void Capture(ItemBattery itemBattery)
+    {
+        if (!SemiFunc.IsMasterClientOrSingleplayer()) return;
+        if (itemBattery == null) return;
+
+        Saved[itemBattery.GetInstanceID()] = PatchBatteryContinuousDrain.CaptureBatteryState(itemBattery);
+    }
+
+    internal static void Redirect(ItemBattery itemBattery)
+    {
+        if (!SemiFunc.IsMasterClientOrSingleplayer()) return;
+        if (itemBattery == null) return;
+
+        int id = itemBattery.GetInstanceID();
+        if (!Saved.TryGetValue(id, out var before)) return;
+
+        float drained = before.BatteryLife - itemBattery.batteryLife;
+        if (drained <= 0f) return;
+
+        if (ChargingStation.instance == null || ChargingStation.instance.chargeTotal <= 0)
+        {
+            return;
+        }
+
+        PatchBatteryContinuousDrain.RestoreBatteryState(itemBattery, before);
+
+        if (!Debt.TryGetValue(id, out float currentDebt))
+            currentDebt = 0f;
+        currentDebt += drained * 20f / 100f;
+
+        if (currentDebt >= 1f)
+        {
+            int costInt = Mathf.FloorToInt(currentDebt);
+            costInt = Mathf.Min(costInt, ChargingStation.instance.chargeTotal);
+            PatchBatteryConsume.DrainStation(costInt);
+            currentDebt -= costInt;
+        }
+
+        Debt[id] = currentDebt;
+    }
+
+    internal static void Remove(ItemBattery itemBattery)
+    {
+        if (itemBattery == null) return;
+
+        int id = itemBattery.GetInstanceID();
+        Saved.Remove(id);
+        Debt.Remove(id);
+    }
+
+    internal static void Clear()
+    {
+        Saved.Clear();
+        Debt.Clear();
+    }
+}
+
+[HarmonyPatch(typeof(ItemDroneFeather), "BatteryDrain")]
+public class PatchDroneFeatherBatteryDrain
+{
+    static void Prefix(ItemBattery ___itemBattery)
+    {
+        PatchDroneDirectBatteryDrain.Capture(___itemBattery);
+    }
+
+    static void Postfix(ItemBattery ___itemBattery)
+    {
+        PatchDroneDirectBatteryDrain.Redirect(___itemBattery);
+    }
+}
+
+[HarmonyPatch(typeof(ItemDroneTorque), "BatteryDrain")]
+public class PatchDroneTorqueBatteryDrain
+{
+    static void Prefix(ItemBattery ___itemBattery)
+    {
+        PatchDroneDirectBatteryDrain.Capture(___itemBattery);
+    }
+
+    static void Postfix(ItemBattery ___itemBattery)
+    {
+        PatchDroneDirectBatteryDrain.Redirect(___itemBattery);
+    }
+}
+
+[HarmonyPatch(typeof(ItemDroneZeroGravity), "Update")]
+public class PatchDroneZeroGravityUpdate
+{
+    static void Prefix(ItemBattery ___itemBattery)
+    {
+        PatchDroneDirectBatteryDrain.Capture(___itemBattery);
+    }
+
+    static void Postfix(ItemBattery ___itemBattery)
+    {
+        PatchDroneDirectBatteryDrain.Redirect(___itemBattery);
+    }
+}
+
+[HarmonyPatch(typeof(ItemDroneZeroGravity), "FixedUpdate")]
+public class PatchDroneZeroGravityFixedUpdate
+{
+    static void Prefix(ItemBattery ___itemBattery)
+    {
+        PatchDroneDirectBatteryDrain.Capture(___itemBattery);
+    }
+
+    static void Postfix(ItemBattery ___itemBattery)
+    {
+        PatchDroneDirectBatteryDrain.Redirect(___itemBattery);
+    }
+}
+
 [HarmonyPatch(typeof(ChargingStation), "ChargingStationCrystalBrokenRPC")]
 public class PatchChargingStationCrystalBrokenClamp
 {
@@ -529,6 +649,7 @@ public class PatchStatsResetCleanup
         PatchBatteryConsume.ResetCachedSync();
         PatchBatteryContinuousDrain.Saved.Clear();
         PatchBatteryContinuousDrain.Debt.Clear();
+        PatchDroneDirectBatteryDrain.Clear();
         PatchMeleeSwingHit.Clear();
         PatchMeleeEnemySwingHit.Clear();
     }
@@ -542,6 +663,7 @@ public class PatchStatsLoadCleanup
         PatchBatteryConsume.ResetCachedSync();
         PatchBatteryContinuousDrain.Saved.Clear();
         PatchBatteryContinuousDrain.Debt.Clear();
+        PatchDroneDirectBatteryDrain.Clear();
         PatchMeleeSwingHit.Clear();
         PatchMeleeEnemySwingHit.Clear();
     }
