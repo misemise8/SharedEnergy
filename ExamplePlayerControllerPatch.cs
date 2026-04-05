@@ -14,6 +14,8 @@ public class PatchBatteryConsume
     private const string PowerCrystalItemName = "Item Power Crystal";
     private const int FallbackEnergyPerCrystal = 10;
     private const int FallbackMaxCrystals = 10;
+    private static int? LastSyncedChargeTotal;
+    private static int? LastSyncedCrystalCount;
 
     static bool Prefix(ItemBattery __instance, int _bars)
     {
@@ -89,9 +91,25 @@ public class PatchBatteryConsume
         StatsManager.instance.runStats["chargingStationChargeTotal"] = syncedTotal;
         StatsManager.instance.runStats["chargingStationCharge"] = syncedCrystalCount;
         StatsManager.instance.itemsPurchased[PowerCrystalItemName] = syncedCrystalCount;
+        LastSyncedChargeTotal = syncedTotal;
+        LastSyncedCrystalCount = syncedCrystalCount;
 
         SharedEnergy.Logger.LogInfo(
             $"[SyncStationState] total={syncedTotal}/{maxChargeTotal}, crystals={syncedCrystalCount}/{GetMaxCrystals()}, runCharge={StatsManager.instance.runStats["chargingStationCharge"]}, purchased={StatsManager.instance.itemsPurchased[PowerCrystalItemName]}");
+    }
+
+    internal static int GetPurchaseBaselineTotal(int rawTotal)
+    {
+        int clampedRawTotal = Mathf.Clamp(rawTotal, 0, GetMaxChargeTotal());
+        if (!LastSyncedChargeTotal.HasValue) return clampedRawTotal;
+        return Mathf.Min(clampedRawTotal, LastSyncedChargeTotal.Value);
+    }
+
+    internal static int GetPurchaseBaselineCrystalCount(int purchasedAfter)
+    {
+        int prePurchaseRaw = Mathf.Clamp(purchasedAfter - 1, 0, GetMaxCrystals());
+        if (!LastSyncedCrystalCount.HasValue) return prePurchaseRaw;
+        return Mathf.Min(prePurchaseRaw, LastSyncedCrystalCount.Value);
     }
 }
 
@@ -318,22 +336,33 @@ public class PatchCrystalPurchase
         if (itemName != "Item Power Crystal") return;
         if (StatsManager.instance == null) return;
 
-        int current = Mathf.Clamp(
-            StatsManager.instance.runStats["chargingStationChargeTotal"],
-            0,
-            PatchBatteryConsume.GetMaxChargeTotal());
+        int rawTotal = StatsManager.instance.runStats["chargingStationChargeTotal"];
         int purchasedAfter = Mathf.Max(StatsManager.instance.itemsPurchased["Item Power Crystal"], 0);
+        int current = PatchBatteryConsume.GetPurchaseBaselineTotal(rawTotal);
         int energyPerCrystal = PatchBatteryConsume.GetEnergyPerCrystal();
-        int requiredCrystalCount = PatchBatteryConsume.CalculateCrystalCount(current);
-        int crystalCount = Mathf.Min(
-            PatchBatteryConsume.GetMaxCrystals(),
-            Mathf.Max(purchasedAfter, requiredCrystalCount + 1));
+        int baselineCrystalCount = PatchBatteryConsume.GetPurchaseBaselineCrystalCount(purchasedAfter);
+        int crystalCount = Mathf.Min(PatchBatteryConsume.GetMaxCrystals(), baselineCrystalCount + 1);
         int maxChargeForCurrentCrystals = Mathf.Min(crystalCount * energyPerCrystal, PatchBatteryConsume.GetMaxChargeTotal());
         int newTotal = Mathf.Clamp(current + energyPerCrystal, 0, maxChargeForCurrentCrystals);
 
         SharedEnergy.Logger.LogInfo(
-            $"[PatchCrystalPurchase] beforeTotal={current}, purchasedAfter={purchasedAfter}, requiredCrystals={requiredCrystalCount}, energyPerCrystal={energyPerCrystal}, crystalsAfterNormalize={crystalCount}, maxForCrystals={maxChargeForCurrentCrystals}, targetTotal={newTotal}");
+            $"[PatchCrystalPurchase] rawTotal={rawTotal}, baselineTotal={current}, purchasedAfter={purchasedAfter}, baselineCrystals={baselineCrystalCount}, energyPerCrystal={energyPerCrystal}, crystalsAfterPurchase={crystalCount}, maxForCrystals={maxChargeForCurrentCrystals}, targetTotal={newTotal}");
 
         PatchBatteryConsume.SyncStationState(newTotal, crystalCount);
+    }
+}
+
+[HarmonyPatch(typeof(ChargingStation), "ChargingStationCrystalBrokenRPC")]
+public class PatchChargingStationCrystalBrokenClamp
+{
+    static void Postfix()
+    {
+        if (StatsManager.instance == null) return;
+
+        int current = StatsManager.instance.itemsPurchased["Item Power Crystal"];
+        if (current >= 0) return;
+
+        StatsManager.instance.itemsPurchased["Item Power Crystal"] = 0;
+        SharedEnergy.Logger.LogInfo("[ChargingStationCrystalBrokenClamp] corrected negative crystal count back to 0");
     }
 }
