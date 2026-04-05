@@ -41,7 +41,7 @@ public class PatchBatteryConsume
         if (ChargingStation.instance == null) return;
         if (StatsManager.instance == null) return;
 
-        SharedEnergy.Logger.LogInfo($"[DrainStation] 消費:{cost}, 現在のchargeTotal:{ChargingStation.instance.chargeTotal}, itemsPurchased:{SemiFunc.StatGetItemsPurchased("Item Power Crystal")}");
+        SharedEnergy.LogDebug($"[DrainStation] 消費:{cost}, 現在のchargeTotal:{ChargingStation.instance.chargeTotal}, itemsPurchased:{SemiFunc.StatGetItemsPurchased("Item Power Crystal")}");
     
         int newTotal = Mathf.Max(0, ChargingStation.instance.chargeTotal - cost);
         SyncStationState(newTotal);
@@ -79,12 +79,24 @@ public class PatchBatteryConsume
         int syncedTotal = Mathf.Clamp(chargeTotal, 0, maxChargeTotal);
         int syncedCrystalCount = crystalCount ?? CalculateCrystalCount(syncedTotal);
         syncedCrystalCount = Mathf.Clamp(syncedCrystalCount, 0, GetMaxCrystals());
+        bool shouldBreakCrystals = false;
 
         if (ChargingStation.instance != null)
         {
             ChargingStation.instance.chargeTotal = syncedTotal;
             float chargeFloat = (float)syncedTotal / maxChargeTotal;
             Traverse.Create(ChargingStation.instance).Field("chargeFloat").SetValue(chargeFloat);
+            int currentVisualCrystals = ChargingStation.instance.crystals.Count;
+            shouldBreakCrystals = currentVisualCrystals > syncedCrystalCount;
+        }
+
+        if (shouldBreakCrystals)
+        {
+            SyncCrystalVisuals(syncedCrystalCount);
+        }
+
+        if (ChargingStation.instance != null)
+        {
             Traverse.Create(ChargingStation.instance).Field("chargeInt").SetValue(syncedCrystalCount);
         }
 
@@ -94,8 +106,14 @@ public class PatchBatteryConsume
         LastSyncedChargeTotal = syncedTotal;
         LastSyncedCrystalCount = syncedCrystalCount;
 
-        SharedEnergy.Logger.LogInfo(
+        SharedEnergy.LogDebug(
             $"[SyncStationState] total={syncedTotal}/{maxChargeTotal}, crystals={syncedCrystalCount}/{GetMaxCrystals()}, runCharge={StatsManager.instance.runStats["chargingStationCharge"]}, purchased={StatsManager.instance.itemsPurchased[PowerCrystalItemName]}");
+    }
+
+    internal static void ResetCachedSync()
+    {
+        LastSyncedChargeTotal = null;
+        LastSyncedCrystalCount = null;
     }
 
     internal static int GetPurchaseBaselineTotal(int rawTotal)
@@ -110,6 +128,30 @@ public class PatchBatteryConsume
         int prePurchaseRaw = Mathf.Clamp(purchasedAfter - 1, 0, GetMaxCrystals());
         if (!LastSyncedCrystalCount.HasValue) return prePurchaseRaw;
         return Mathf.Min(prePurchaseRaw, LastSyncedCrystalCount.Value);
+    }
+
+    private static void SyncCrystalVisuals(int targetCrystalCount)
+    {
+        if (ChargingStation.instance == null) return;
+        if (SemiFunc.RunIsShop()) return;
+        if (!SemiFunc.IsMasterClientOrSingleplayer()) return;
+
+        int currentVisualCrystals = ChargingStation.instance.crystals.Count;
+        int crystalsToBreak = Mathf.Max(0, currentVisualCrystals - targetCrystalCount);
+        if (crystalsToBreak <= 0) return;
+
+        int logicalCountBeforeBreak = Mathf.Clamp(targetCrystalCount + crystalsToBreak, 0, GetMaxCrystals());
+        Traverse.Create(ChargingStation.instance).Field("chargeInt").SetValue(logicalCountBeforeBreak);
+        StatsManager.instance.runStats["chargingStationCharge"] = logicalCountBeforeBreak;
+        StatsManager.instance.itemsPurchased[PowerCrystalItemName] = logicalCountBeforeBreak;
+
+        MethodInfo? destroyCrystal = typeof(ChargingStation).GetMethod("DestroyCrystal", BindingFlags.NonPublic | BindingFlags.Instance);
+        if (destroyCrystal == null) return;
+
+        for (int i = 0; i < crystalsToBreak; i++)
+        {
+            destroyCrystal.Invoke(ChargingStation.instance, null);
+        }
     }
 }
 
@@ -134,7 +176,7 @@ public class PatchChargingStationStartNormalize
 
         if (rawTotal != normalizedTotal || rawCrystalCount != normalizedCrystalCount)
         {
-            SharedEnergy.Logger.LogInfo(
+            SharedEnergy.LogDebug(
                 $"[ChargingStationStartNormalize] rawTotal={rawTotal}, rawCrystals={rawCrystalCount} -> total={normalizedTotal}, crystals={normalizedCrystalCount}");
         }
 
@@ -239,6 +281,17 @@ public class PatchBatteryFixedUpdate
     }
 }
 
+[HarmonyPatch(typeof(ItemBattery), "OnDestroy")]
+public class PatchBatteryCleanup
+{
+    static void Postfix(ItemBattery __instance)
+    {
+        int id = __instance.GetInstanceID();
+        PatchBatteryContinuousDrain.Saved.Remove(id);
+        PatchBatteryContinuousDrain.Debt.Remove(id);
+    }
+}
+
 // ========================================
 // Patch 3: メレー武器（SwingHitRPC）
 // ========================================
@@ -285,6 +338,7 @@ public class PatchMeleeSwingHit
     }
 
     internal static void Remove(int id) => Debt.Remove(id);
+    internal static void Clear() => Debt.Clear();
 }
 
 // ========================================
@@ -325,6 +379,7 @@ public class PatchMeleeEnemySwingHit
     }
 
     internal static void Remove(int id) => Debt.Remove(id);
+    internal static void Clear() => Debt.Clear();
 }
 
 [HarmonyPatch(typeof(StatsManager), nameof(StatsManager.ItemPurchase))]
@@ -345,7 +400,7 @@ public class PatchCrystalPurchase
         int maxChargeForCurrentCrystals = Mathf.Min(crystalCount * energyPerCrystal, PatchBatteryConsume.GetMaxChargeTotal());
         int newTotal = Mathf.Clamp(current + energyPerCrystal, 0, maxChargeForCurrentCrystals);
 
-        SharedEnergy.Logger.LogInfo(
+        SharedEnergy.LogDebug(
             $"[PatchCrystalPurchase] rawTotal={rawTotal}, baselineTotal={current}, purchasedAfter={purchasedAfter}, baselineCrystals={baselineCrystalCount}, energyPerCrystal={energyPerCrystal}, crystalsAfterPurchase={crystalCount}, maxForCrystals={maxChargeForCurrentCrystals}, targetTotal={newTotal}");
 
         PatchBatteryConsume.SyncStationState(newTotal, crystalCount);
@@ -363,6 +418,43 @@ public class PatchChargingStationCrystalBrokenClamp
         if (current >= 0) return;
 
         StatsManager.instance.itemsPurchased["Item Power Crystal"] = 0;
-        SharedEnergy.Logger.LogInfo("[ChargingStationCrystalBrokenClamp] corrected negative crystal count back to 0");
+        SharedEnergy.LogDebug("[ChargingStationCrystalBrokenClamp] corrected negative crystal count back to 0");
+    }
+}
+
+[HarmonyPatch(typeof(ItemMelee), "OnDestroy")]
+public class PatchMeleeCleanup
+{
+    static void Postfix(ItemMelee __instance)
+    {
+        int id = __instance.GetInstanceID();
+        PatchMeleeSwingHit.Remove(id);
+        PatchMeleeEnemySwingHit.Remove(id);
+    }
+}
+
+[HarmonyPatch(typeof(StatsManager), nameof(StatsManager.ResetAllStats))]
+public class PatchStatsResetCleanup
+{
+    static void Prefix()
+    {
+        PatchBatteryConsume.ResetCachedSync();
+        PatchBatteryContinuousDrain.Saved.Clear();
+        PatchBatteryContinuousDrain.Debt.Clear();
+        PatchMeleeSwingHit.Clear();
+        PatchMeleeEnemySwingHit.Clear();
+    }
+}
+
+[HarmonyPatch(typeof(StatsManager), nameof(StatsManager.LoadGame))]
+public class PatchStatsLoadCleanup
+{
+    static void Prefix()
+    {
+        PatchBatteryConsume.ResetCachedSync();
+        PatchBatteryContinuousDrain.Saved.Clear();
+        PatchBatteryContinuousDrain.Debt.Clear();
+        PatchMeleeSwingHit.Clear();
+        PatchMeleeEnemySwingHit.Clear();
     }
 }

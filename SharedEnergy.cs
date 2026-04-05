@@ -10,8 +10,17 @@ public class SharedEnergy : BaseUnityPlugin
 {
     internal static SharedEnergy Instance { get; private set; } = null!;
     internal new static ManualLogSource Logger => Instance._logger;
+    internal const bool EnableDebugLogging = false;
     private ManualLogSource _logger => base.Logger;
     internal Harmony? Harmony { get; set; }
+
+    internal static void LogDebug(string message)
+    {
+        if (EnableDebugLogging)
+        {
+            Logger.LogInfo(message);
+        }
+    }
 
     private void Awake()
     {
