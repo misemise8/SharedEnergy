@@ -95,6 +95,35 @@ public class PatchBatteryConsume
     }
 }
 
+[HarmonyPatch(typeof(ChargingStation), "Start")]
+public class PatchChargingStationStartNormalize
+{
+    static void Prefix(ChargingStation __instance)
+    {
+        if (!SemiFunc.IsMasterClientOrSingleplayer()) return;
+        if (StatsManager.instance == null) return;
+
+        int energyPerCrystal = Traverse.Create(__instance).Field("energyPerCrystal").GetValue<int>();
+        int maxCrystals = Traverse.Create(__instance).Field("maxCrystals").GetValue<int>();
+        int maxChargeTotal = energyPerCrystal * maxCrystals;
+
+        int rawTotal = StatsManager.instance.runStats["chargingStationChargeTotal"];
+        int rawCrystalCount = StatsManager.instance.itemsPurchased["Item Power Crystal"];
+
+        int normalizedTotal = Mathf.Clamp(rawTotal, 0, maxChargeTotal);
+        int requiredCrystalCount = Mathf.Clamp(Mathf.CeilToInt((float)normalizedTotal / energyPerCrystal), 0, maxCrystals);
+        int normalizedCrystalCount = Mathf.Clamp(Mathf.Max(rawCrystalCount, requiredCrystalCount), 0, maxCrystals);
+
+        if (rawTotal != normalizedTotal || rawCrystalCount != normalizedCrystalCount)
+        {
+            SharedEnergy.Logger.LogInfo(
+                $"[ChargingStationStartNormalize] rawTotal={rawTotal}, rawCrystals={rawCrystalCount} -> total={normalizedTotal}, crystals={normalizedCrystalCount}");
+        }
+
+        PatchBatteryConsume.SyncStationState(normalizedTotal, normalizedCrystalCount);
+    }
+}
+
 // ========================================
 // Patch 2: ItemBattery.Update（連続ドレイン系）
 // ========================================
@@ -289,14 +318,21 @@ public class PatchCrystalPurchase
         if (itemName != "Item Power Crystal") return;
         if (StatsManager.instance == null) return;
 
-        int current = StatsManager.instance.runStats["chargingStationChargeTotal"];
-        int crystalCount = StatsManager.instance.itemsPurchased["Item Power Crystal"];
+        int current = Mathf.Clamp(
+            StatsManager.instance.runStats["chargingStationChargeTotal"],
+            0,
+            PatchBatteryConsume.GetMaxChargeTotal());
+        int purchasedAfter = Mathf.Max(StatsManager.instance.itemsPurchased["Item Power Crystal"], 0);
         int energyPerCrystal = PatchBatteryConsume.GetEnergyPerCrystal();
+        int requiredCrystalCount = PatchBatteryConsume.CalculateCrystalCount(current);
+        int crystalCount = Mathf.Min(
+            PatchBatteryConsume.GetMaxCrystals(),
+            Mathf.Max(purchasedAfter, requiredCrystalCount + 1));
         int maxChargeForCurrentCrystals = Mathf.Min(crystalCount * energyPerCrystal, PatchBatteryConsume.GetMaxChargeTotal());
         int newTotal = Mathf.Clamp(current + energyPerCrystal, 0, maxChargeForCurrentCrystals);
 
         SharedEnergy.Logger.LogInfo(
-            $"[PatchCrystalPurchase] beforeTotal={current}, energyPerCrystal={energyPerCrystal}, crystalsAfterPurchase={crystalCount}, maxForCrystals={maxChargeForCurrentCrystals}, targetTotal={newTotal}");
+            $"[PatchCrystalPurchase] beforeTotal={current}, purchasedAfter={purchasedAfter}, requiredCrystals={requiredCrystalCount}, energyPerCrystal={energyPerCrystal}, crystalsAfterNormalize={crystalCount}, maxForCrystals={maxChargeForCurrentCrystals}, targetTotal={newTotal}");
 
         PatchBatteryConsume.SyncStationState(newTotal, crystalCount);
     }
