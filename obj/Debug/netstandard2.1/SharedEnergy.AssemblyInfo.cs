@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Misemise")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+1af6492160df9496617d1e9d06b58b2e68871362")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+fce65192ded41b968f21f1b324971f8e08ffb132")]
 [assembly: System.Reflection.AssemblyProductAttribute("SharedEnergy")]
 [assembly: System.Reflection.AssemblyTitleAttribute("SharedEnergy")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

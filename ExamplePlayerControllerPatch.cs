@@ -190,14 +190,46 @@ public class PatchChargingStationStartNormalize
 [HarmonyPatch(typeof(ItemBattery), "Update")]
 public class PatchBatteryContinuousDrain
 {
-    internal static readonly Dictionary<int, float> Saved = new();
+    internal readonly struct BatterySnapshot
+    {
+        internal BatterySnapshot(float batteryLife, int batteryLifeInt, int batteryLifeCountBars, int batteryLifeCountBarsPrev, int currentBars)
+        {
+            BatteryLife = batteryLife;
+            BatteryLifeInt = batteryLifeInt;
+            BatteryLifeCountBars = batteryLifeCountBars;
+            BatteryLifeCountBarsPrev = batteryLifeCountBarsPrev;
+            CurrentBars = currentBars;
+        }
+
+        internal float BatteryLife { get; }
+        internal int BatteryLifeInt { get; }
+        internal int BatteryLifeCountBars { get; }
+        internal int BatteryLifeCountBarsPrev { get; }
+        internal int CurrentBars { get; }
+    }
+
+    private static readonly MethodInfo BatteryUpdateBarsMethod =
+        typeof(ItemBattery).GetMethod("BatteryUpdateBars", BindingFlags.NonPublic | BindingFlags.Instance);
+
+    internal static readonly Dictionary<int, BatterySnapshot> Saved = new();
     internal static readonly Dictionary<int, float> Debt = new();
+
+    internal static BatterySnapshot CaptureBatteryState(ItemBattery itemBattery)
+    {
+        var traverse = Traverse.Create(itemBattery);
+        return new BatterySnapshot(
+            itemBattery.batteryLife,
+            itemBattery.batteryLifeInt,
+            traverse.Field("batteryLifeCountBars").GetValue<int>(),
+            traverse.Field("batteryLifeCountBarsPrev").GetValue<int>(),
+            itemBattery.currentBars);
+    }
 
     static void Prefix(ItemBattery __instance)
     {
         if (!SemiFunc.IsMasterClientOrSingleplayer()) return;
         if (SemiFunc.RunIsShop()) return;
-        Saved[__instance.GetInstanceID()] = __instance.batteryLife;
+        Saved[__instance.GetInstanceID()] = CaptureBatteryState(__instance);
     }
 
     static void Postfix(ItemBattery __instance)
@@ -206,9 +238,9 @@ public class PatchBatteryContinuousDrain
         if (ChargingStation.instance == null) return;
 
         int id = __instance.GetInstanceID();
-        if (!Saved.TryGetValue(id, out float before)) return;
+        if (!Saved.TryGetValue(id, out BatterySnapshot before)) return;
 
-        float drained = before - __instance.batteryLife;
+        float drained = before.BatteryLife - __instance.batteryLife;
         if (drained <= 0f) return;
 
         if (ChargingStation.instance.chargeTotal <= 0)
@@ -217,7 +249,7 @@ public class PatchBatteryContinuousDrain
             return;
         }
 
-        __instance.batteryLife = before;
+        RestoreBatteryState(__instance, before);
 
         if (!Debt.TryGetValue(id, out float currentDebt))
             currentDebt = 0f;
@@ -233,6 +265,24 @@ public class PatchBatteryContinuousDrain
 
         Debt[id] = currentDebt;
     }
+
+    internal static void RestoreBatteryState(ItemBattery itemBattery, BatterySnapshot snapshot)
+    {
+        itemBattery.batteryLife = snapshot.BatteryLife;
+        itemBattery.batteryLifeInt = snapshot.BatteryLifeInt;
+        itemBattery.currentBars = snapshot.CurrentBars;
+
+        var traverse = Traverse.Create(itemBattery);
+        traverse.Field("batteryLifeCountBars").SetValue(snapshot.BatteryLifeCountBars);
+        traverse.Field("batteryLifeCountBarsPrev").SetValue(snapshot.BatteryLifeCountBarsPrev);
+
+        if (!string.IsNullOrEmpty(itemBattery.GetComponent<ItemAttributes>()?.instanceName))
+        {
+            SemiFunc.StatSetBattery(itemBattery.GetComponent<ItemAttributes>().instanceName, Mathf.RoundToInt(snapshot.BatteryLife));
+        }
+
+        BatteryUpdateBarsMethod?.Invoke(itemBattery, new object[] { snapshot.BatteryLifeInt });
+    }
 }
 
 
@@ -243,7 +293,7 @@ public class PatchBatteryFixedUpdate
     {
         if (!SemiFunc.IsMasterClientOrSingleplayer()) return;
         if (SemiFunc.RunIsShop()) return;
-        PatchBatteryContinuousDrain.Saved[__instance.GetInstanceID()] = __instance.batteryLife;
+        PatchBatteryContinuousDrain.Saved[__instance.GetInstanceID()] = PatchBatteryContinuousDrain.CaptureBatteryState(__instance);
     }
 
     static void Postfix(ItemBattery __instance)
@@ -252,9 +302,9 @@ public class PatchBatteryFixedUpdate
         if (ChargingStation.instance == null) return;
 
         int id = __instance.GetInstanceID();
-        if (!PatchBatteryContinuousDrain.Saved.TryGetValue(id, out float before)) return;
+        if (!PatchBatteryContinuousDrain.Saved.TryGetValue(id, out PatchBatteryContinuousDrain.BatterySnapshot before)) return;
 
-        float drained = before - __instance.batteryLife;
+        float drained = before.BatteryLife - __instance.batteryLife;
         if (drained <= 0f) return;
 
         if (ChargingStation.instance.chargeTotal <= 0)
@@ -263,7 +313,7 @@ public class PatchBatteryFixedUpdate
             return;
         }
 
-        __instance.batteryLife = before;
+        PatchBatteryContinuousDrain.RestoreBatteryState(__instance, before);
 
         if (!PatchBatteryContinuousDrain.Debt.TryGetValue(id, out float currentDebt))
             currentDebt = 0f;
@@ -299,12 +349,20 @@ public class PatchBatteryCleanup
 public class PatchMeleeSwingHit
 {
     private static readonly Dictionary<int, float> Debt = new();
+    private static readonly Dictionary<int, PatchBatteryContinuousDrain.BatterySnapshot> SavedBattery = new();
 
     // durabilityDrainのFieldInfoをキャッシュ
     private static readonly FieldInfo DrainField =
         typeof(ItemMelee).GetField("durabilityDrain", BindingFlags.NonPublic | BindingFlags.Instance);
     private static readonly FieldInfo CooldownField =
         typeof(ItemMelee).GetField("durabilityLossCooldown", BindingFlags.NonPublic | BindingFlags.Instance);
+
+    static void Prefix(ItemMelee __instance, ItemBattery ___itemBattery)
+    {
+        if (!SemiFunc.IsMasterClientOrSingleplayer()) return;
+        if (___itemBattery == null) return;
+        SavedBattery[__instance.GetInstanceID()] = PatchBatteryContinuousDrain.CaptureBatteryState(___itemBattery);
+    }
 
     static void Postfix(ItemMelee __instance, bool durabilityLoss, ItemBattery ___itemBattery)
     {
@@ -313,14 +371,16 @@ public class PatchMeleeSwingHit
         if (ChargingStation.instance == null) return;
         if (___itemBattery == null) return;
         if (ChargingStation.instance.chargeTotal <= 0) return;
+        if (!SavedBattery.TryGetValue(__instance.GetInstanceID(), out var before)) return;
 
         float cooldown = (float)CooldownField.GetValue(__instance);
         if (cooldown <= 0f) return;
 
-        float drain = (float)DrainField.GetValue(__instance);
+        float drain = before.BatteryLife - ___itemBattery.batteryLife;
+        if (drain <= 0f) return;
 
         // バッテリーを戻す（上限クランプあり）
-        ___itemBattery.batteryLife = Mathf.Min(100f, ___itemBattery.batteryLife + drain);
+        PatchBatteryContinuousDrain.RestoreBatteryState(___itemBattery, before);
 
         int id = __instance.GetInstanceID();
         if (!Debt.TryGetValue(id, out float debt)) debt = 0f;
@@ -337,8 +397,17 @@ public class PatchMeleeSwingHit
         Debt[id] = debt;
     }
 
-    internal static void Remove(int id) => Debt.Remove(id);
-    internal static void Clear() => Debt.Clear();
+    internal static void Remove(int id)
+    {
+        Debt.Remove(id);
+        SavedBattery.Remove(id);
+    }
+
+    internal static void Clear()
+    {
+        Debt.Clear();
+        SavedBattery.Clear();
+    }
 }
 
 // ========================================
@@ -348,9 +417,17 @@ public class PatchMeleeSwingHit
 public class PatchMeleeEnemySwingHit
 {
     private static readonly Dictionary<int, float> Debt = new();
+    private static readonly Dictionary<int, PatchBatteryContinuousDrain.BatterySnapshot> SavedBattery = new();
 
     private static readonly FieldInfo EnemyDrainField =
         typeof(ItemMelee).GetField("durabilityDrainOnEnemiesAndPVP", BindingFlags.Public | BindingFlags.Instance);
+
+    static void Prefix(ItemMelee __instance, ItemBattery ___itemBattery)
+    {
+        if (!SemiFunc.IsMasterClientOrSingleplayer()) return;
+        if (___itemBattery == null) return;
+        SavedBattery[__instance.GetInstanceID()] = PatchBatteryContinuousDrain.CaptureBatteryState(___itemBattery);
+    }
 
     static void Postfix(ItemMelee __instance, bool _playerHit, ItemBattery ___itemBattery)
     {
@@ -358,10 +435,12 @@ public class PatchMeleeEnemySwingHit
         if (ChargingStation.instance == null) return;
         if (___itemBattery == null) return;
         if (ChargingStation.instance.chargeTotal <= 0) return;
+        if (!SavedBattery.TryGetValue(__instance.GetInstanceID(), out var before)) return;
 
-        float drain = (float)EnemyDrainField.GetValue(__instance);
+        float drain = before.BatteryLife - ___itemBattery.batteryLife;
+        if (drain <= 0f) return;
 
-        ___itemBattery.batteryLife = Mathf.Min(100f, ___itemBattery.batteryLife + drain);
+        PatchBatteryContinuousDrain.RestoreBatteryState(___itemBattery, before);
 
         int id = __instance.GetInstanceID();
         if (!Debt.TryGetValue(id, out float debt)) debt = 0f;
@@ -378,8 +457,17 @@ public class PatchMeleeEnemySwingHit
         Debt[id] = debt;
     }
 
-    internal static void Remove(int id) => Debt.Remove(id);
-    internal static void Clear() => Debt.Clear();
+    internal static void Remove(int id)
+    {
+        Debt.Remove(id);
+        SavedBattery.Remove(id);
+    }
+
+    internal static void Clear()
+    {
+        Debt.Clear();
+        SavedBattery.Clear();
+    }
 }
 
 [HarmonyPatch(typeof(StatsManager), nameof(StatsManager.ItemPurchase))]
