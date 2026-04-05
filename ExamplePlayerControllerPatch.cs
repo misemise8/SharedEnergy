@@ -11,6 +11,10 @@ namespace SharedEnergy;
 [HarmonyPatch(typeof(ItemBattery), nameof(ItemBattery.RemoveFullBar))]
 public class PatchBatteryConsume
 {
+    private const string PowerCrystalItemName = "Item Power Crystal";
+    private const int FallbackEnergyPerCrystal = 10;
+    private const int FallbackMaxCrystals = 10;
+
     static bool Prefix(ItemBattery __instance, int _bars)
     {
         if (!SemiFunc.IsMasterClientOrSingleplayer()) return true;
@@ -38,15 +42,53 @@ public class PatchBatteryConsume
         SharedEnergy.Logger.LogInfo($"[DrainStation] 消費:{cost}, 現在のchargeTotal:{ChargingStation.instance.chargeTotal}, itemsPurchased:{SemiFunc.StatGetItemsPurchased("Item Power Crystal")}");
     
         int newTotal = Mathf.Max(0, ChargingStation.instance.chargeTotal - cost);
-        ChargingStation.instance.chargeTotal = newTotal;
-        float newFloat = (float)newTotal / 100f;
-        Traverse.Create(ChargingStation.instance).Field("chargeFloat").SetValue(newFloat);
-        StatsManager.instance.runStats["chargingStationChargeTotal"] = newTotal;
-    
-        // chargeIntも同期して次ステージのmax計算を正確にする
-        int newChargeInt = Mathf.CeilToInt((float)newTotal / 10f);
-        Traverse.Create(ChargingStation.instance).Field("chargeInt").SetValue(newChargeInt);
-        StatsManager.instance.itemsPurchased["Item Power Crystal"] = newChargeInt;
+        SyncStationState(newTotal);
+    }
+
+    internal static int GetEnergyPerCrystal()
+    {
+        if (ChargingStation.instance == null) return FallbackEnergyPerCrystal;
+        return Traverse.Create(ChargingStation.instance).Field("energyPerCrystal").GetValue<int>();
+    }
+
+    internal static int GetMaxCrystals()
+    {
+        if (ChargingStation.instance == null) return FallbackMaxCrystals;
+        return Traverse.Create(ChargingStation.instance).Field("maxCrystals").GetValue<int>();
+    }
+
+    internal static int GetMaxChargeTotal()
+    {
+        return GetEnergyPerCrystal() * GetMaxCrystals();
+    }
+
+    internal static int CalculateCrystalCount(int chargeTotal)
+    {
+        int energyPerCrystal = GetEnergyPerCrystal();
+        int maxCrystals = GetMaxCrystals();
+        return Mathf.Clamp(Mathf.CeilToInt((float)chargeTotal / energyPerCrystal), 0, maxCrystals);
+    }
+
+    internal static void SyncStationState(int chargeTotal, int? crystalCount = null)
+    {
+        if (StatsManager.instance == null) return;
+
+        int maxChargeTotal = GetMaxChargeTotal();
+        int syncedTotal = Mathf.Clamp(chargeTotal, 0, maxChargeTotal);
+        int syncedCrystalCount = crystalCount ?? CalculateCrystalCount(syncedTotal);
+        syncedCrystalCount = Mathf.Clamp(syncedCrystalCount, 0, GetMaxCrystals());
+
+        if (ChargingStation.instance != null)
+        {
+            ChargingStation.instance.chargeTotal = syncedTotal;
+            float chargeFloat = (float)syncedTotal / maxChargeTotal;
+            Traverse.Create(ChargingStation.instance).Field("chargeFloat").SetValue(chargeFloat);
+            Traverse.Create(ChargingStation.instance).Field("chargeInt").SetValue(syncedCrystalCount);
+        }
+
+        StatsManager.instance.runStats["chargingStationChargeTotal"] = syncedTotal;
+        StatsManager.instance.runStats["chargingStationCharge"] = syncedCrystalCount;
+        StatsManager.instance.itemsPurchased[PowerCrystalItemName] = syncedCrystalCount;
     }
 }
 
@@ -235,17 +277,21 @@ public class PatchMeleeEnemySwingHit
     internal static void Remove(int id) => Debt.Remove(id);
 }
 
-// ========================================
-// Patch 5: クリーンアップ（OnDestroyベース）
-// ========================================
-
-[HarmonyPatch(typeof(ItemMelee), "OnDestroy")]
-public class PatchMeleeCleanup
+[HarmonyPatch(typeof(StatsManager), nameof(StatsManager.ItemPurchase))]
+public class PatchCrystalPurchase
 {
-    static void Postfix(ItemMelee __instance)
+    static void Postfix(string itemName)
     {
-        int id = __instance.GetInstanceID();
-        PatchMeleeSwingHit.Remove(id);
-        PatchMeleeEnemySwingHit.Remove(id);
+        if (!SemiFunc.IsMasterClientOrSingleplayer()) return;
+        if (itemName != "Item Power Crystal") return;
+        if (StatsManager.instance == null) return;
+
+        int crystalCount = StatsManager.instance.itemsPurchased["Item Power Crystal"];
+        int energyPerCrystal = PatchBatteryConsume.GetEnergyPerCrystal();
+        int maxChargeForCurrentCrystals = Mathf.Min(crystalCount * energyPerCrystal, PatchBatteryConsume.GetMaxChargeTotal());
+        int current = StatsManager.instance.runStats["chargingStationChargeTotal"];
+        int newTotal = Mathf.Clamp(current + energyPerCrystal, 0, maxChargeForCurrentCrystals);
+
+        PatchBatteryConsume.SyncStationState(newTotal, crystalCount);
     }
 }
